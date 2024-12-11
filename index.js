@@ -7,15 +7,14 @@ const {
 } = require("@whiskeysockets/baileys");
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(bodyParser.json());
 
-let sock = null; // Global variable to store the WhatsApp connection
-let isReconnecting = false; // Flag to prevent multiple reconnections
+let sock = null; // Global WhatsApp connection
 
-// Function to initialize the WhatsApp connection
+// Initialize WhatsApp
 async function initializeWhatsApp() {
   const { state, saveCreds } = await useMultiFileAuthState("auth_info_baileys");
   sock = makeWASocket({
@@ -29,12 +28,8 @@ async function initializeWhatsApp() {
       const shouldReconnect =
         lastDisconnect?.error?.output?.statusCode !==
         DisconnectReason.loggedOut;
-      if (shouldReconnect && !isReconnecting) {
-        console.log("Reconnecting...");
-        isReconnecting = true;
-        initializeWhatsApp().finally(() => {
-          isReconnecting = false;
-        });
+      if (shouldReconnect) {
+        reconnectWhatsApp();
       }
     } else if (connection === "open") {
       console.log("WhatsApp connection established!");
@@ -44,11 +39,23 @@ async function initializeWhatsApp() {
   sock.ev.on("creds.update", saveCreds);
 }
 
-// Function to send a message
+// Reconnect with Exponential Backoff
+async function reconnectWhatsApp(delay = 1000) {
+  console.log(`Reconnecting in ${delay / 1000}s...`);
+  setTimeout(async () => {
+    try {
+      await initializeWhatsApp();
+      console.log("Reconnected successfully!");
+    } catch (error) {
+      console.error("Reconnection failed, retrying...", error);
+      reconnectWhatsApp(Math.min(delay * 2, 30000)); // Cap delay at 30 seconds
+    }
+  }, delay);
+}
+
+// Send Message
 async function sendMessage(number, message) {
-  if (!sock) {
-    throw new Error("WhatsApp is not connected.");
-  }
+  if (!sock) throw new Error("WhatsApp is not connected.");
 
   const targetNumber = `${number}@s.whatsapp.net`;
   try {
@@ -60,12 +67,12 @@ async function sendMessage(number, message) {
   }
 }
 
-// Define API route
+// API Route
 app.post("/send", async (req, res) => {
   const { number, message } = req.body;
 
-  if (!number || !message) {
-    return res.status(400).json({ error: "Number and message are required" });
+  if (!number || !message || !/^\d+$/.test(number)) {
+    return res.status(400).json({ error: "Invalid number or message" });
   }
 
   try {
@@ -74,12 +81,23 @@ app.post("/send", async (req, res) => {
       .status(200)
       .json({ success: true, message: "Message sent successfully" });
   } catch (error) {
-    res.status(500).json({ error: "Failed to send message" });
+    console.error("Message sending error:", error);
+    res.status(500).json({ error: error.message || "Internal Server Error" });
   }
 });
 
-// Start the server
+// Graceful Shutdown
+process.on("SIGINT", async () => {
+  console.log("Shutting down...");
+  if (sock) {
+    await sock.logout();
+    console.log("WhatsApp connection closed.");
+  }
+  process.exit(0);
+});
+
+// Start Server
 app.listen(PORT, async () => {
-  console.log(`Server is running on http://localhost:${PORT}`);
+  console.log(`Server is running on port ${PORT}`);
   await initializeWhatsApp();
 });
