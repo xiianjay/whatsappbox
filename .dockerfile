@@ -2,7 +2,7 @@
 FROM node:20
 
 # Set the working directory in the container
-WORKDIR /
+WORKDIR ./
 
 # Copy the package.json and package-lock.json first to leverage Docker cache
 COPY package*.json ./
